@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\AI\Contracts\AIProvider;
 use App\AI\Exceptions\AICallException;
+use App\AI\Exceptions\AIResponseException;
 use App\AI\Exceptions\ValidationFailedException;
 use App\AI\Fake\FakeAIProvider;
 use App\Enums\RequestStatus;
@@ -158,7 +159,7 @@ it('repairs once on validation failure then succeeds', function () {
     expect($variation->revisions()->count())->toBe(1);
 });
 
-it('marks variation failed on provider error', function () {
+it('records and rethrows transient provider errors so the queue can retry', function () {
     [$writer] = setupWriter();
     $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
         new AICallException('Provider API error: timeout'),
@@ -174,11 +175,39 @@ it('marks variation failed on provider error', function () {
     $service->dispatchBatch($request);
 
     $variation = $request->variations()->first();
-    $service->generateVariation($variation->id);
+
+    // Swallowing the exception made the queue retry machinery (tries/backoff
+    // on the jobs) dead code: every attempt "succeeded" without generating.
+    expect(fn () => $service->generateVariation($variation->id))
+        ->toThrow(AICallException::class);
 
     $variation->refresh();
     expect($variation->status)->toBe(VariationStatus::Pending);
     expect($variation->error_message)->toBe('Provider API error: timeout');
+    expect($variation->request->fresh()->status)->toBe(RequestStatus::Failed);
+    expect(AiUsageLog::where('status', 'failed')->count())->toBe(1);
+});
+
+it('records but swallows permanent provider errors', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        new AIResponseException('Response is not valid JSON'),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $service->generateVariation($request->variations()->first()->id);
+
+    $variation = $request->variations()->first()->fresh();
+    expect($variation->status)->toBe(VariationStatus::Pending);
+    expect($variation->error_message)->toBe('Response is not valid JSON');
     expect($variation->request->fresh()->status)->toBe(RequestStatus::Failed);
 });
 
@@ -261,6 +290,88 @@ it('keeps a completed request completed when a section regeneration fails', func
     expect($request->fresh()->status)->toBe(RequestStatus::Completed);
 });
 
+it('records section and title failures without auto-retrying on the queue', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        $this->makeVariationResult(),
+        new ValidationFailedException(['heading' => ['The heading field is required.']]),
+        new ValidationFailedException(['title' => ['The title field is required.']]),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $variation = $request->variations()->first();
+    $service->generateVariation($variation->id);
+    $sectionId = $variation->sections()->first()->id;
+
+    // Deterministic response defects used to escape as exceptions, which the
+    // queue then auto-retried pointlessly (same invalid output every try).
+    expect(fn () => $service->regenerateSection($variation->id, $sectionId))
+        ->not->toThrow(ValidationFailedException::class);
+    expect(fn () => $service->regenerateTitle($variation->id))
+        ->not->toThrow(ValidationFailedException::class);
+
+    expect($variation->fresh()->status)->toBe(VariationStatus::Generated);
+    expect($variation->fresh()->error_message)->toContain('Response failed validation');
+    expect(AiUsageLog::where('status', 'failed')->count())->toBe(2);
+    expect($request->fresh()->status)->toBe(RequestStatus::Completed);
+});
+
+it('retries once when the provider returns empty content, then succeeds', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        new AICallException('Empty content returned by provider'),
+        $this->makeVariationResult(),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $service->generateVariation($request->variations()->first()->id);
+
+    $variation = $request->variations()->first()->fresh();
+    expect($variation->status)->toBe(VariationStatus::Generated);
+    expect($variation->error_message)->toBeNull();
+    expect(AiUsageLog::where('status', 'failed')->count())->toBe(0);
+});
+
+it('records a failure when the quirk retry also comes back empty', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        new AICallException('Empty content returned by provider'),
+        new AICallException('Empty content returned by provider'),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $service->generateVariation($request->variations()->first()->id);
+
+    $variation = $request->variations()->first()->fresh();
+    expect($variation->status)->toBe(VariationStatus::Pending);
+    expect($variation->error_message)->toBe('Empty content returned by provider');
+    expect(AiUsageLog::where('status', 'failed')->count())->toBe(1);
+});
+
 it('marks the variation failed when the repair attempt also fails validation', function () {
     [$writer] = setupWriter();
     $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
@@ -303,7 +414,8 @@ it('recomputes the request status after a regeneration attempt', function () {
     $service->dispatchBatch($request);
 
     $variation = $request->variations()->first();
-    $service->generateVariation($variation->id);
+    expect(fn () => $service->generateVariation($variation->id))
+        ->toThrow(AICallException::class);
     expect($variation->fresh()->request->fresh()->status)->toBe(RequestStatus::Failed);
 
     $service->regenerateVariation($variation->id);

@@ -141,7 +141,7 @@ class GenerationService
 
         try {
             try {
-                $result = $this->provider->generateVariation($generationRequest);
+                $result = $this->withQuirkRetry(fn () => $this->provider->generateVariation($generationRequest));
             } catch (ValidationFailedException $e) {
                 $repair = new GenerationRequest(
                     topic: $generationRequest->topic,
@@ -159,7 +159,7 @@ class GenerationService
                     repairContext: json_encode($e->errors()),
                 );
                 try {
-                    $result = $this->provider->generateVariation($repair);
+                    $result = $this->withQuirkRetry(fn () => $this->provider->generateVariation($repair));
                 } catch (ValidationFailedException) {
                     $this->recordFailure($request, $variation, config('ai.models.generation'), 'generation', $start, 'Response failed validation after repair');
                     $this->updateRequestStatus($request);
@@ -168,8 +168,7 @@ class GenerationService
                 }
             }
         } catch (AICallException|AIResponseException $e) {
-            $this->recordFailure($request, $variation, config('ai.models.generation'), 'generation', $start, $e->getMessage());
-            $this->updateRequestStatus($request);
+            $this->handleAIError($request, $variation, config('ai.models.generation'), 'generation', $start, $e);
 
             return;
         }
@@ -299,9 +298,25 @@ class GenerationService
         $start = hrtime(true);
 
         try {
-            $result = $this->provider->regenerateSection($sectionRequest);
+            $result = $this->withQuirkRetry(fn () => $this->provider->regenerateSection($sectionRequest));
+        } catch (ValidationFailedException) {
+            // Deterministic output defects must not auto-retry on the queue:
+            // the same invalid response would fail again and burn all tries.
+            $this->recordFailure(
+                $request, $variation, config('ai.models.section_regeneration'),
+                'section_regeneration', $start, 'Section regeneration failed: Response failed validation'
+            );
+
+            return;
         } catch (AICallException|AIResponseException $e) {
-            $variation->update(['error_message' => 'Section regeneration failed: '.$e->getMessage()]);
+            $this->recordFailure(
+                $request, $variation, config('ai.models.section_regeneration'),
+                'section_regeneration', $start, 'Section regeneration failed: '.$e->getMessage()
+            );
+
+            if ($this->isTransientFailure($e)) {
+                throw $e;
+            }
 
             return;
         }
@@ -347,9 +362,23 @@ class GenerationService
         $start = hrtime(true);
 
         try {
-            $result = $this->provider->regenerateTitle($titleRequest);
+            $result = $this->withQuirkRetry(fn () => $this->provider->regenerateTitle($titleRequest));
+        } catch (ValidationFailedException) {
+            $this->recordFailure(
+                $request, $variation, config('ai.models.title_regeneration'),
+                'title_regeneration', $start, 'Title regeneration failed: Response failed validation'
+            );
+
+            return;
         } catch (AICallException|AIResponseException $e) {
-            $variation->update(['error_message' => 'Title regeneration failed: '.$e->getMessage()]);
+            $this->recordFailure(
+                $request, $variation, config('ai.models.title_regeneration'),
+                'title_regeneration', $start, 'Title regeneration failed: '.$e->getMessage()
+            );
+
+            if ($this->isTransientFailure($e)) {
+                throw $e;
+            }
 
             return;
         }
@@ -492,6 +521,59 @@ class GenerationService
         $variation->update(['error_message' => $errorMessage]);
     }
 
+    /**
+     * Record a provider/response failure and let transient errors escape so
+     * the queue retry machinery (tries/backoff) can recover them. Without the
+     * rethrow, every failure was swallowed and queue retries were dead code.
+     */
+    private function handleAIError(
+        ContentRequest $request,
+        ContentVariation $variation,
+        string $model,
+        string $operation,
+        int $start,
+        AICallException|AIResponseException $e,
+    ): void {
+        $this->recordFailure($request, $variation, $model, $operation, $start, $e->getMessage());
+        $this->updateRequestStatus($request);
+
+        if ($this->isTransientFailure($e)) {
+            throw $e;
+        }
+    }
+
+    /**
+     * Deterministic provider quirks (truncation, empty content) are worth one
+     * immediate re-attempt, not a full queue retry cycle.
+     */
+    private function withQuirkRetry(callable $call): mixed
+    {
+        try {
+            return $call();
+        } catch (AICallException $e) {
+            if (! $this->isQuirkFailure($e)) {
+                throw $e;
+            }
+
+            return $call();
+        }
+    }
+
+    private function isTransientFailure(AICallException|AIResponseException $e): bool
+    {
+        // Message-based classification mirrors how DeepSeekProvider builds
+        // AICallException: transport errors and provider API errors may clear
+        // on retry; everything else is permanent.
+        return str_starts_with($e->getMessage(), 'Provider transport error')
+            || str_starts_with($e->getMessage(), 'Provider API error');
+    }
+
+    private function isQuirkFailure(AICallException $e): bool
+    {
+        return str_contains($e->getMessage(), 'truncated')
+            || str_contains($e->getMessage(), 'Empty content');
+    }
+
     private function runVariationCall(
         ContentRequest $request,
         ContentVariation $variation,
@@ -503,7 +585,7 @@ class GenerationService
 
         try {
             try {
-                $result = $this->provider->regenerateVariation($generationRequest);
+                $result = $this->withQuirkRetry(fn () => $this->provider->regenerateVariation($generationRequest));
             } catch (ValidationFailedException $e) {
                 $repair = new GenerationRequest(
                     topic: $generationRequest->topic,
@@ -521,7 +603,7 @@ class GenerationService
                     repairContext: json_encode($e->errors()),
                 );
                 try {
-                    $result = $this->provider->regenerateVariation($repair);
+                    $result = $this->withQuirkRetry(fn () => $this->provider->regenerateVariation($repair));
                 } catch (ValidationFailedException) {
                     $this->recordFailure($request, $variation, $generationRequest->model, $operation, $start, 'Response failed validation after repair');
                     $this->updateRequestStatus($request);
@@ -530,8 +612,7 @@ class GenerationService
                 }
             }
         } catch (AICallException|AIResponseException $e) {
-            $this->recordFailure($request, $variation, $generationRequest->model, $operation, $start, $e->getMessage());
-            $this->updateRequestStatus($request);
+            $this->handleAIError($request, $variation, $generationRequest->model, $operation, $start, $e);
 
             return;
         }

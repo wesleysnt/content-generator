@@ -19,25 +19,18 @@ use App\AI\Prompts\PromptBuilder;
 use App\AI\Validation\GenerationValidator;
 use App\AI\Validation\SectionValidator;
 use App\AI\Validation\TitleValidator;
-use OpenAI;
 use OpenAI\Client;
 use OpenAI\Exceptions\ErrorException;
 use OpenAI\Exceptions\TransporterException;
 
 class DeepSeekProvider implements AIProvider
 {
-    private Client $client;
-
     public function __construct(
         private readonly GenerationValidator $generationValidator,
         private readonly SectionValidator $sectionValidator,
         private readonly TitleValidator $titleValidator,
-    ) {
-        $this->client = OpenAI::factory()
-            ->withBaseUri(config('ai.base_url'))
-            ->withApiKey(config('ai.api_key'))
-            ->make();
-    }
+        private readonly Client $client,
+    ) {}
 
     public function generateVariation(GenerationRequest $request): VariationResult
     {
