@@ -1,0 +1,9 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": { "content": "not json at all {{" }
+    }
+  ],
+  "usage": { "prompt_tokens": 10, "completion_tokens": 20 }
+}

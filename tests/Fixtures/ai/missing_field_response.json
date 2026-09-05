@@ -1,0 +1,11 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "content": "{\"slug\":\"cloud-accounting-small-businesses\",\"excerpt\":\"A practical guide.\",\"meta_title\":\"Cloud Accounting for Small Businesses\",\"meta_description\":\"A practical guide.\",\"focus_keyword\":\"cloud accounting\",\"secondary_keywords\":[],\"category\":\"Finance\",\"tags\":[],\"og_title\":\"OG\",\"og_description\":\"OGD\",\"faq\":[],\"schema_type\":\"Article\",\"sections\":[{\"heading\":\"Introduction\",\"body\":\"<p>Intro.</p>\"}]}"
+      }
+    }
+  ],
+  "usage": { "prompt_tokens": 10, "completion_tokens": 20 }
+}

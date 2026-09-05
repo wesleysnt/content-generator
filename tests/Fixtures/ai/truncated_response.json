@@ -1,0 +1,9 @@
+{
+  "choices": [
+    {
+      "finish_reason": "length",
+      "message": { "content": "{\"title\":\"Trunc" }
+    }
+  ],
+  "usage": { "prompt_tokens": 10, "completion_tokens": 20 }
+}
