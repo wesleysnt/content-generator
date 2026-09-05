@@ -58,6 +58,52 @@ it('queues a section regeneration job', function () {
     Queue::assertPushed(\App\Jobs\RegenerateSectionJob::class, 1);
 });
 
+it('credits queued regeneration jobs to the acting user', function () {
+    [$writer, $variation] = editorSetup();
+    Queue::fake();
+
+    Livewire::actingAs($writer)
+        ->test(ArticleEditor::class, ['record' => $variation->id])
+        ->call('regenerateSection', $variation->sections()->first()->id)
+        ->call('regenerateTitle');
+
+    Queue::assertPushed(
+        \App\Jobs\RegenerateSectionJob::class,
+        fn ($job) => $job->variationId === $variation->id && $job->userId === $writer->id
+    );
+    Queue::assertPushed(
+        \App\Jobs\RegenerateTitleJob::class,
+        fn ($job) => $job->variationId === $variation->id && $job->userId === $writer->id
+    );
+});
+
+it('keeps the mounted variation client-tamper-proof', function () {
+    [$writer, $variation] = editorSetup();
+    $other = ContentVariation::create([
+        'content_request_id' => $variation->request->id,
+        'variation_number' => 2,
+        'angle_type' => 'educational',
+        'status' => 'generated',
+        'title' => 'Other',
+    ]);
+
+    $component = Livewire::actingAs($writer)
+        ->test(ArticleEditor::class, ['record' => $variation->id]);
+
+    // Re-targeting the locked record at another variation is rejected.
+    expect(fn () => $component->set('record', $other->id))
+        ->toThrow(\Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException::class);
+
+    // Actions still hit the originally mounted variation only.
+    Livewire::actingAs($writer)
+        ->test(ArticleEditor::class, ['record' => $variation->id])
+        ->call('markFinal')
+        ->assertSet('record.id', $variation->id);
+
+    expect($variation->fresh()->status)->toBe(\App\Enums\VariationStatus::Final);
+    expect($other->fresh()->status)->toBe(\App\Enums\VariationStatus::Generated);
+});
+
 it('restores a revision and creates a new one', function () {
     [$writer, $variation] = editorSetup();
 

@@ -17,7 +17,7 @@ class RegenerateTitleJob implements ShouldBeUnique, ShouldQueue
 
     public array $backoff = [10, 30, 120];
 
-    public function __construct(public int $variationId) {}
+    public function __construct(public int $variationId, public ?int $userId = null) {}
 
     public function uniqueId(): string
     {
@@ -26,6 +26,6 @@ class RegenerateTitleJob implements ShouldBeUnique, ShouldQueue
 
     public function handle(GenerationService $service): void
     {
-        $service->regenerateTitle($this->variationId);
+        $service->regenerateTitle($this->variationId, $this->userId);
     }
 }

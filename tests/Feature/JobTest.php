@@ -60,3 +60,30 @@ it('runs RegenerateSectionJob through the service', function () {
 
     expect($section->fresh()->body)->toBe('<p>New body</p>');
 });
+
+it('attributes the queued section regeneration revision to the dispatch user', function () {
+    (new \Database\Seeders\PromptTemplateSeeder())->run();
+    $writer = User::factory()->create(['role' => 'writer']);
+
+    $request = ContentRequest::create([
+        'user_id' => $writer->id, 'topic' => 'T', 'primary_keyword' => 'kw',
+    ]);
+    $variation = ContentVariation::create([
+        'content_request_id' => $request->id, 'variation_number' => 1,
+        'angle_type' => 'educational', 'status' => 'generated', 'title' => 'T',
+    ]);
+    $section = $variation->sections()->create([
+        'section_order' => 1, 'heading' => 'H', 'body' => '<p>B</p>',
+    ]);
+
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        new \App\AI\DTO\SectionResult('H', '<p>New body</p>', 10, 20, 'deepseek-v4-pro', ['heading' => 'H', 'body' => '<p>New body</p>']),
+    ]));
+
+    // The queue worker has no authenticated user: the revision must be
+    // credited to the id captured at dispatch time.
+    (new RegenerateSectionJob($variation->id, $section->id, $writer->id))
+        ->handle(app(GenerationService::class));
+
+    expect($variation->revisions()->first()->created_by)->toBe($writer->id);
+});

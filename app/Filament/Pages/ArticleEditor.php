@@ -14,6 +14,7 @@ use App\Services\RevisionService;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Illuminate\Support\Facades\Gate;
+use Livewire\Attributes\Locked;
 use Mews\Purifier\Facades\Purifier;
 
 class ArticleEditor extends Page
@@ -28,6 +29,7 @@ class ArticleEditor extends Page
 
     protected static string $view = 'filament.pages.article-editor';
 
+    #[Locked]
     public $record;
 
     public array $formState = [];
@@ -36,7 +38,7 @@ class ArticleEditor extends Page
 
     public function mount(ContentVariation $record): void
     {
-        abort_unless(Gate::allows('view', $record), 403);
+        Gate::authorize('view', $record);
 
         $this->record = $record->load(['request', 'sections', 'revisions']);
 
@@ -51,6 +53,8 @@ class ArticleEditor extends Page
 
     public function save(): void
     {
+        Gate::authorize('update', $this->record);
+
         app(RevisionService::class)->snapshot($this->record, RevisionType::WriterEdit, auth()->id());
 
         $this->record->update([
@@ -80,20 +84,27 @@ class ArticleEditor extends Page
 
     public function regenerateSection(int $sectionId): void
     {
-        RegenerateSectionJob::dispatch($this->record->id, $sectionId);
+        Gate::authorize('regenerate', $this->record);
+        $this->record->sections()->findOrFail($sectionId);
+
+        RegenerateSectionJob::dispatch($this->record->id, $sectionId, auth()->id());
 
         Notification::make()->title('Section regeneration queued.')->success()->send();
     }
 
     public function regenerateTitle(): void
     {
-        RegenerateTitleJob::dispatch($this->record->id);
+        Gate::authorize('regenerate', $this->record);
+
+        RegenerateTitleJob::dispatch($this->record->id, auth()->id());
 
         Notification::make()->title('Title regeneration queued.')->success()->send();
     }
 
     public function restoreRevision(int $revisionId): void
     {
+        Gate::authorize('update', $this->record);
+
         $revision = $this->record->revisions()->findOrFail($revisionId);
 
         app(RevisionService::class)->restore($this->record, $revision, auth()->id());
@@ -105,7 +116,9 @@ class ArticleEditor extends Page
 
     public function markFinal(): void
     {
-        app(GenerationService::class)->markFinal($this->record->id);
+        Gate::authorize('update', $this->record);
+
+        app(GenerationService::class)->markFinal($this->record->id, auth()->user());
 
         Notification::make()->title('Marked as final.')->success()->send();
     }

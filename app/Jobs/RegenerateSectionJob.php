@@ -17,7 +17,7 @@ class RegenerateSectionJob implements ShouldBeUnique, ShouldQueue
 
     public array $backoff = [10, 30, 120];
 
-    public function __construct(public int $variationId, public int $sectionId) {}
+    public function __construct(public int $variationId, public int $sectionId, public ?int $userId = null) {}
 
     public function uniqueId(): string
     {
@@ -26,6 +26,6 @@ class RegenerateSectionJob implements ShouldBeUnique, ShouldQueue
 
     public function handle(GenerationService $service): void
     {
-        $service->regenerateSection($this->variationId, $this->sectionId);
+        $service->regenerateSection($this->variationId, $this->sectionId, $this->userId);
     }
 }

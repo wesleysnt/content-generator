@@ -12,6 +12,8 @@ use App\Enums\VariationStatus;
 use App\Jobs\GenerateContentJob;
 use App\Jobs\RegenerateContentJob;
 use App\Models\AiUsageLog;
+use App\Models\ContentRequest;
+use App\Models\ContentVariation;
 use App\Models\User;
 use App\Services\GenerationService;
 use Database\Seeders\PromptTemplateSeeder;
@@ -490,4 +492,118 @@ it('converges the request status when a duplicate batch job no-ops', function ()
     $service->generateVariation($variations[0]->id);
 
     expect($request->fresh()->status)->toBe(RequestStatus::Completed);
+});
+
+it('refuses state mutations when an acting user does not own the variation', function () {
+    [$writer] = setupWriter();
+    $other = User::factory()->create(['role' => 'writer']);
+
+    $service = app(GenerationService::class);
+    $request = ContentRequest::create([
+        'user_id' => $writer->id,
+        'topic' => 'T',
+        'primary_keyword' => 'kw',
+    ]);
+    $variation = ContentVariation::create([
+        'content_request_id' => $request->id,
+        'variation_number' => 1,
+        'angle_type' => 'educational',
+        'status' => 'generated',
+        'title' => 'T',
+    ]);
+    $sectionId = $variation->sections()->create([
+        'section_order' => 1,
+        'heading' => 'H',
+        'body' => '<p>B</p>',
+    ])->id;
+
+    expect(fn () => $service->lock($variation->id, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->unlock($variation->id, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->discard($variation->id, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->markFinal($variation->id, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->regenerateVariation($variation->id, null, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->regenerateSection($variation->id, $sectionId, null, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->regenerateTitle($variation->id, null, $other))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+
+    expect($variation->fresh()->is_locked)->toBeFalse();
+    expect($variation->fresh()->status)->toBe(VariationStatus::Generated);
+    expect($variation->fresh()->title)->toBe('T');
+    expect($variation->revisions()->count())->toBe(0);
+});
+
+it('lets admins act on any variation', function () {
+    [$writer] = setupWriter();
+    $admin = User::factory()->create(['role' => 'admin']);
+
+    $service = app(GenerationService::class);
+    $request = ContentRequest::create([
+        'user_id' => $writer->id,
+        'topic' => 'T',
+        'primary_keyword' => 'kw',
+    ]);
+    $variation = ContentVariation::create([
+        'content_request_id' => $request->id,
+        'variation_number' => 1,
+        'angle_type' => 'educational',
+    ]);
+
+    $service->lock($variation->id, $admin);
+    expect($variation->fresh()->is_locked)->toBeTrue();
+
+    $service->unlock($variation->id, $admin);
+    expect($variation->fresh()->is_locked)->toBeFalse();
+
+    $service->markFinal($variation->id, $admin);
+    expect($variation->fresh()->status)->toBe(VariationStatus::Final);
+});
+
+it('attributes regeneration revisions to the acting user when given', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        $this->makeVariationResult(),
+        $this->makeVariationResult(),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+    $variation = $request->variations()->first();
+    $service->generateVariation($variation->id);
+
+    $service->regenerateVariation($variation->id, null, $writer);
+
+    $latest = $variation->revisions()->first();
+    expect($latest->revision_type)->toBe(RevisionType::AiRegeneration);
+    expect($latest->created_by)->toBe($writer->id);
+});
+
+it('queues the acting user id on unlocked regeneration jobs', function () {
+    [$writer] = setupWriter();
+    Queue::fake();
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 2,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $service->regenerateUnlocked($request, $writer);
+
+    Queue::assertPushed(RegenerateContentJob::class, 2);
+    Queue::assertPushed(RegenerateContentJob::class, fn ($job) => $job->userId === $writer->id);
 });

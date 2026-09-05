@@ -219,14 +219,15 @@ class GenerationService
         $this->updateRequestStatus($request);
     }
 
-    public function regenerateVariation(int $variationId): void
+    public function regenerateVariation(int $variationId, ?int $userId = null, ?User $user = null): void
     {
         $variation = ContentVariation::findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
         abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
 
-        $this->revisionService->snapshot($variation, RevisionType::AiRegeneration, auth()->id());
+        $this->revisionService->snapshot($variation, RevisionType::AiRegeneration, $this->resolvedUserId($userId, $user));
 
         $request = $variation->request;
         $promptVersion = PromptTemplate::where('key', 'regeneration')->firstOrFail()->activeVersion()->firstOrFail();
@@ -249,16 +250,17 @@ class GenerationService
         $this->runVariationCall($request, $variation, $promptVersion, $generationRequest, 'regeneration');
     }
 
-    public function regenerateSection(int $variationId, int $sectionId): void
+    public function regenerateSection(int $variationId, int $sectionId, ?int $userId = null, ?User $user = null): void
     {
         $variation = ContentVariation::with('sections')->findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
         $section = $variation->sections()->findOrFail($sectionId);
         $request = $variation->request;
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
         abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
 
-        $this->revisionService->snapshot($variation, RevisionType::SectionRegeneration, auth()->id());
+        $this->revisionService->snapshot($variation, RevisionType::SectionRegeneration, $this->resolvedUserId($userId, $user));
 
         $promptVersion = PromptTemplate::where('key', 'section_regeneration')->firstOrFail()->activeVersion()->firstOrFail();
 
@@ -301,15 +303,16 @@ class GenerationService
         });
     }
 
-    public function regenerateTitle(int $variationId): void
+    public function regenerateTitle(int $variationId, ?int $userId = null, ?User $user = null): void
     {
         $variation = ContentVariation::findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
         $request = $variation->request;
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
         abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
 
-        $this->revisionService->snapshot($variation, RevisionType::TitleRegeneration, auth()->id());
+        $this->revisionService->snapshot($variation, RevisionType::TitleRegeneration, $this->resolvedUserId($userId, $user));
 
         $promptVersion = PromptTemplate::where('key', 'title_regeneration')->firstOrFail()->activeVersion()->firstOrFail();
 
@@ -352,35 +355,61 @@ class GenerationService
         });
     }
 
-    public function lock(int $variationId): void
-    {
-        ContentVariation::findOrFail($variationId)->update(['is_locked' => true]);
-    }
-
-    public function unlock(int $variationId): void
-    {
-        ContentVariation::findOrFail($variationId)->update(['is_locked' => false]);
-    }
-
-    public function discard(int $variationId): void
+    public function lock(int $variationId, ?User $user = null): void
     {
         $variation = ContentVariation::findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
+        $variation->update(['is_locked' => true]);
+    }
+
+    public function unlock(int $variationId, ?User $user = null): void
+    {
+        $variation = ContentVariation::findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
+        $variation->update(['is_locked' => false]);
+    }
+
+    public function discard(int $variationId, ?User $user = null): void
+    {
+        $variation = ContentVariation::findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
         abort_if($variation->is_locked, 403, 'Unlock before discarding.');
         $variation->update(['status' => VariationStatus::Discarded]);
     }
 
-    public function markFinal(int $variationId): void
+    public function markFinal(int $variationId, ?User $user = null): void
     {
-        ContentVariation::findOrFail($variationId)->update(['status' => VariationStatus::Final]);
+        $variation = ContentVariation::findOrFail($variationId);
+        $this->authorizeVariationOwner($user, $variation);
+        $variation->update(['status' => VariationStatus::Final]);
     }
 
-    public function regenerateUnlocked(ContentRequest $request): void
+    public function regenerateUnlocked(ContentRequest $request, ?User $user = null): void
     {
+        if ($user !== null && ! $user->isAdmin() && $user->id !== $request->user_id) {
+            abort(403, 'You do not own this content request.');
+        }
+
         foreach ($request->unlockedVariations()->get() as $variation) {
             if ($variation->isRegenerable()) {
-                RegenerateContentJob::dispatch($variation->id);
+                RegenerateContentJob::dispatch($variation->id, $user?->id ?? auth()->id());
             }
         }
+    }
+
+    private function authorizeVariationOwner(?User $user, ContentVariation $variation): void
+    {
+        // An explicit acting user (HTTP context) must own the variation or be
+        // an admin. Queued jobs pass no user — they were authenticated at
+        // dispatch time and are integrity-checked by the variation id.
+        if ($user !== null && ! $user->isAdmin() && $user->id !== $variation->request->user_id) {
+            abort(403, 'You do not own this variation.');
+        }
+    }
+
+    private function resolvedUserId(?int $userId, ?User $user): ?int
+    {
+        return $userId ?? $user?->id ?? auth()->id();
     }
 
     public function updateRequestStatus(ContentRequest $request): void
