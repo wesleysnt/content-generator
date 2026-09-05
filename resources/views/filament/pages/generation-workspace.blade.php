@@ -42,17 +42,32 @@
                             <x-filament::badge color="danger">DISCARDED</x-filament::badge>
                         @elseif ($variation->status === \App\Enums\VariationStatus::Final)
                             <x-filament::badge color="primary">FINAL</x-filament::badge>
+                        @elseif ($variation->status === \App\Enums\VariationStatus::Pending && $variation->error_message !== null)
+                            <x-filament::badge color="danger">FAILED</x-filament::badge>
                         @elseif ($variation->status === \App\Enums\VariationStatus::Pending)
                             <x-filament::badge color="warning">GENERATING</x-filament::badge>
                         @endif
                     </div>
                 </div>
 
-                @if ($variation->status === \App\Enums\VariationStatus::Pending)
-                    <p class="text-sm text-gray-500">Waiting for generation job…</p>
-                @elseif ($variation->error_message && $variation->status !== \App\Enums\VariationStatus::Generated)
+                @if ($variation->error_message)
                     <p class="text-sm text-red-600">{{ $variation->error_message }}</p>
-                @else
+                    @if ($variation->isRegenerable())
+                        <div class="mt-2">
+                            <x-filament::button wire:click="retryVariation({{ $variation->id }})" size="sm" color="danger">
+                                Retry
+                            </x-filament::button>
+                        </div>
+                    @endif
+                @endif
+
+                @if ($variation->status === \App\Enums\VariationStatus::Pending && $variation->error_message === null)
+                    <p class="text-sm text-gray-500">Waiting for generation job…</p>
+                @elseif (in_array($variation->status, [
+                    \App\Enums\VariationStatus::Generated,
+                    \App\Enums\VariationStatus::Final,
+                    \App\Enums\VariationStatus::Discarded,
+                ], true))
                     <h3 class="font-semibold mb-1">{{ $variation->title }}</h3>
                     <p class="text-sm text-gray-600 mb-3 line-clamp-3">{{ $variation->excerpt }}</p>
                     <p class="text-xs text-gray-400 mb-3">{{ $variation->sections->count() }} sections · {{ number_format($variation->prompt_tokens + $variation->completion_tokens) }} tokens</p>

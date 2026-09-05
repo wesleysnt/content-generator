@@ -132,6 +132,60 @@ it('only touches variations that belong to the mounted request', function () {
     expect($variation->fresh()->is_locked)->toBeFalse();
 });
 
+it('shows a failed variation with a retry that restarts the batch job', function () {
+    [$writer, $request] = workspaceSetup();
+    $variation = $request->variations()->first();
+    $variation->update([
+        'status' => 'pending',
+        'error_message' => 'Provider API error: timeout',
+    ]);
+    Queue::fake();
+
+    $component = Livewire::actingAs($writer)
+        ->test(GenerationWorkspace::class, ['record' => $request->id])
+        ->assertSee('FAILED')
+        ->assertSee('Provider API error: timeout')
+        ->assertSee('Retry');
+
+    $component->call('retryVariation', $variation->id);
+
+    Queue::assertPushed(\App\Jobs\GenerateContentJob::class, 1);
+});
+
+it('shows a retry on generated content whose regeneration failed', function () {
+    [$writer, $request] = workspaceSetup();
+    $variation = $request->variations()->first();
+    $variation->update([
+        'error_message' => 'Section regeneration failed: Provider API error: timeout',
+    ]);
+    Queue::fake();
+
+    $component = Livewire::actingAs($writer)
+        ->test(GenerationWorkspace::class, ['record' => $request->id])
+        ->assertSee('Section regeneration failed')
+        ->assertSee('Retry')
+        ->assertSee('Title 1');
+
+    $component->call('retryVariation', $variation->id);
+
+    Queue::assertPushed(\App\Jobs\RegenerateContentJob::class, 1);
+    Queue::assertPushed(\App\Jobs\RegenerateContentJob::class, fn ($job) => $job->userId === $writer->id);
+});
+
+it('does not offer a retry for locked variations', function () {
+    [$writer, $request] = workspaceSetup();
+    $variation = $request->variations()->first();
+    $variation->update([
+        'is_locked' => true,
+        'error_message' => 'Section regeneration failed',
+    ]);
+
+    Livewire::actingAs($writer)
+        ->test(GenerationWorkspace::class, ['record' => $request->id])
+        ->assertSee('Section regeneration failed')
+        ->assertDontSee('Retry');
+});
+
 it('keeps the mounted record client-tamper-proof', function () {
     [$writer, $request] = workspaceSetup();
     [$v1] = $request->variations()->get();
