@@ -130,14 +130,17 @@ class GenerationService
                     maxTokens: $generationRequest->maxTokens,
                     repairContext: json_encode($e->errors()),
                 );
-                $result = $this->provider->generateVariation($repair);
+                try {
+                    $result = $this->provider->generateVariation($repair);
+                } catch (ValidationFailedException) {
+                    $this->recordFailure($request, $variation, config('ai.models.generation'), 'generation', $start, 'Response failed validation after repair');
+                    $this->updateRequestStatus($request);
+
+                    return;
+                }
             }
         } catch (AICallException|AIResponseException $e) {
-            $this->usageService->record(
-                $request->user, $request, $variation, config('ai.models.generation'),
-                'generation', 0, 0, $this->elapsedMs($start), 'failed'
-            );
-            $variation->update(['error_message' => $e->getMessage()]);
+            $this->recordFailure($request, $variation, config('ai.models.generation'), 'generation', $start, $e->getMessage());
             $this->updateRequestStatus($request);
 
             return;
@@ -261,14 +264,13 @@ class GenerationService
             $result = $this->provider->regenerateSection($sectionRequest);
         } catch (AICallException|AIResponseException $e) {
             $variation->update(['error_message' => 'Section regeneration failed: '.$e->getMessage()]);
-            $this->updateRequestStatus($request);
 
             return;
         }
 
         DB::transaction(function () use ($variation, $section, $result, $promptVersion, $request, $start) {
             $section->update(['body' => Purifier::clean($result->body)]);
-            $variation->update(['model_used' => $result->model, 'prompt_version_id' => $promptVersion->id]);
+            $variation->update(['model_used' => $result->model, 'prompt_version_id' => $promptVersion->id, 'error_message' => null]);
             $this->usageService->record(
                 $request->user, $request, $variation, $result->model,
                 'section_regeneration', $result->inputTokens, $result->outputTokens, $this->elapsedMs($start)
@@ -317,6 +319,7 @@ class GenerationService
                 'meta_description' => $result->metaDescription,
                 'model_used' => $result->model,
                 'prompt_version_id' => $promptVersion->id,
+                'error_message' => null,
             ]);
             $this->usageService->record(
                 $request->user, $request, $variation, $result->model,
@@ -377,6 +380,21 @@ class GenerationService
         }
     }
 
+    private function recordFailure(
+        ContentRequest $request,
+        ContentVariation $variation,
+        string $model,
+        string $operation,
+        int $start,
+        string $errorMessage,
+    ): void {
+        $this->usageService->record(
+            $request->user, $request, $variation, $model,
+            $operation, 0, 0, $this->elapsedMs($start), 'failed'
+        );
+        $variation->update(['error_message' => $errorMessage]);
+    }
+
     private function runVariationCall(
         ContentRequest $request,
         ContentVariation $variation,
@@ -405,14 +423,16 @@ class GenerationService
                     maxTokens: $generationRequest->maxTokens,
                     repairContext: json_encode($e->errors()),
                 );
-                $result = $this->provider->regenerateVariation($repair);
+                try {
+                    $result = $this->provider->regenerateVariation($repair);
+                } catch (ValidationFailedException) {
+                    $this->recordFailure($request, $variation, $generationRequest->model, $operation, $start, 'Response failed validation after repair');
+
+                    return;
+                }
             }
         } catch (AICallException|AIResponseException $e) {
-            $this->usageService->record(
-                $request->user, $request, $variation, $generationRequest->model,
-                $operation, 0, 0, $this->elapsedMs($start), 'failed'
-            );
-            $variation->update(['error_message' => $e->getMessage()]);
+            $this->recordFailure($request, $variation, $generationRequest->model, $operation, $start, $e->getMessage());
 
             return;
         }

@@ -181,3 +181,54 @@ it('sanitizes section HTML on persist', function () {
     expect($body)->not->toContain('<script>');
     expect($body)->not->toContain('onerror');
 });
+
+it('keeps a finalized request completed when section regeneration fails', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        $this->makeVariationResult(),
+        new AICallException('Section provider error'),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $variation = $request->variations()->first();
+    $service->generateVariation($variation->id);
+    $service->markFinal($variation->id);
+
+    $service->regenerateSection($variation->id, $variation->sections()->first()->id);
+
+    expect($variation->fresh()->error_message)->toContain('Section regeneration failed');
+    expect($request->fresh()->status)->toBe(RequestStatus::Completed);
+});
+
+it('marks the variation failed when the repair attempt also fails validation', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        new ValidationFailedException(['title' => ['The title field is required.']]),
+        new ValidationFailedException(['title' => ['The title field is required.']]),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $service->generateVariation($request->variations()->first()->id);
+
+    $variation = $request->variations()->first()->fresh();
+    expect($variation->status)->toBe(VariationStatus::Pending);
+    expect($variation->error_message)->toContain('after repair');
+    expect($variation->request->fresh()->status)->toBe(RequestStatus::Failed);
+    expect(AiUsageLog::where('status', 'failed')->count())->toBe(1);
+});
