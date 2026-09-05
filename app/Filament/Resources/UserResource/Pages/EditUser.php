@@ -15,7 +15,8 @@ class EditUser extends EditRecord
     protected function getHeaderActions(): array
     {
         return [
-            Actions\DeleteAction::make(),
+            Actions\DeleteAction::make()
+                ->hidden(fn (): bool => (int) $this->record->getKey() === (int) auth()->id()),
         ];
     }
 
@@ -25,6 +26,12 @@ class EditUser extends EditRecord
             $data['password'] = bcrypt($data['password']);
         } else {
             unset($data['password']);
+        }
+
+        // Demoting yourself is a footgun: the only admin left in the panel
+        // could lock everyone out of user administration.
+        if ((int) $this->record->getKey() === (int) auth()->id()) {
+            $data['role'] = $this->record->role;
         }
 
         return $data;

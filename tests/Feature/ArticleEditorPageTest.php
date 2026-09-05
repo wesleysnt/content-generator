@@ -129,3 +129,33 @@ it('hides AI regeneration actions once the variation is marked final', function 
         ->assertDontSee('Regenerate Section')
         ->assertDontSee('Mark Final');
 });
+
+it('saving without changes does not create a writer-edit revision', function () {
+    [$writer, $variation] = editorSetup();
+
+    Livewire::actingAs($writer)
+        ->test(ArticleEditor::class, ['record' => $variation->id])
+        ->call('save');
+
+    // Unchanged saves used to bloat the history with no-op WriterEdit
+    // snapshots; only an actual change may snapshot.
+    expect($variation->fresh()->revisions()->count())->toBe(1);
+    expect($variation->fresh()->title)->toBe('Original');
+    expect($variation->fresh()->sections()->first()->body)->toBe('<p>Intro body.</p>');
+});
+
+it('a real edit still snapshots and persists', function () {
+    [$writer, $variation] = editorSetup();
+
+    $component = Livewire::actingAs($writer)
+        ->test(ArticleEditor::class, ['record' => $variation->id]);
+
+    $component
+        ->set('formState.title', 'Renamed')
+        ->set('sectionState.'.$variation->sections()->first()->id.'.body', '<p>Edited body.</p>')
+        ->call('save');
+
+    expect($variation->fresh()->title)->toBe('Renamed');
+    expect($variation->fresh()->sections()->first()->body)->toBe('<p>Edited body.</p>');
+    expect($variation->fresh()->revisions()->count())->toBe(2);
+});

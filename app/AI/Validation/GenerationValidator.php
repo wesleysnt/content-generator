@@ -58,8 +58,10 @@ class GenerationValidator
 
         $wordCount = str_word_count(strip_tags($allText));
 
-        if ($wordCount < $targetWordCount * 0.7 || $wordCount > $targetWordCount * 1.3) {
+        if ($wordCount < $targetWordCount * 0.7) {
             $warnings[] = "word count {$wordCount} is below target {$targetWordCount} (tolerance 30%)";
+        } elseif ($wordCount > $targetWordCount * 1.3) {
+            $warnings[] = "word count {$wordCount} exceeds target {$targetWordCount} (tolerance 30%)";
         }
 
         return $warnings;

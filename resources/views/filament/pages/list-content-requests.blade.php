@@ -29,7 +29,7 @@
                         <td class="p-2">{{ $request->topic }}</td>
                         <td class="p-2">{{ $request->user->name }}</td>
                         <td class="p-2">
-                            <x-filament::badge :color="$request->status === App\Enums\RequestStatus::Failed->value ? 'danger' : ($request->status === App\Enums\RequestStatus::Completed->value ? 'success' : 'warning')">
+                            <x-filament::badge :color="$request->status === \App\Enums\RequestStatus::Failed ? 'danger' : ($request->status === \App\Enums\RequestStatus::Completed ? 'success' : 'warning')">
                                 {{ $request->status->value }}
                             </x-filament::badge>
                         </td>

@@ -55,6 +55,26 @@ class ArticleEditor extends Page
     {
         Gate::authorize('update', $this->record);
 
+        $fields = [
+            'title', 'slug', 'excerpt', 'meta_title', 'meta_description',
+            'focus_keyword', 'secondary_keywords', 'category', 'tags',
+            'og_title', 'og_description', 'schema_type',
+        ];
+
+        $clean = fn (array $section): array => [
+            'heading' => $section['heading'],
+            'body' => Purifier::clean($section['body']),
+        ];
+
+        $sectionsUnchanged = collect($this->sectionState)->map($clean)->all()
+            === $this->record->sections()->get()->keyBy('id')->map->only(['heading', 'body'])->map($clean)->all();
+
+        // Saving without edits used to write a no-op WriterEdit snapshot into
+        // the revision history on every visit; skip the write entirely.
+        if ($this->formState === $this->record->only($fields) && $sectionsUnchanged) {
+            return;
+        }
+
         app(RevisionService::class)->snapshot($this->record, RevisionType::WriterEdit, auth()->id());
 
         $this->record->update([

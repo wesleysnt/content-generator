@@ -24,6 +24,11 @@ class RevisionService
 
     public function restore(ContentVariation $variation, ContentRevision $revision, ?int $userId): void
     {
+        // A revision is only restorable onto the variation whose snapshot it
+        // holds; otherwise one article could be overwritten with another's
+        // historical content.
+        abort_if($revision->content_variation_id !== $variation->id, 404, 'Revision does not belong to this variation.');
+
         $this->snapshot($variation, RevisionType::Restore, $userId);
 
         $snapshot = $revision->snapshot;

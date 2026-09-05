@@ -79,3 +79,13 @@ it('warns when word count is far from target', function () {
 
     expect($warnings)->toContain('word count 9 is below target 1500 (tolerance 30%)');
 });
+
+it('labels an over-long article as exceeding the target, not below it', function () {
+    $data = validGenerationData();
+    $data['sections'] = [['heading' => 'H', 'body' => '<p>'.str_repeat('word ', 700).'</p>']];
+
+    $warnings = (new GenerationValidator)->warnings($data, 500);
+
+    expect($warnings)->toContain('word count 704 exceeds target 500 (tolerance 30%)');
+    expect($warnings)->not->toContain('below target');
+});

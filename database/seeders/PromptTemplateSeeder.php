@@ -159,17 +159,21 @@ PROMPT,
         ];
 
         foreach ($templates as $key => $template) {
-            $prompt = PromptTemplate::create([
-                'key' => $key,
+            $prompt = PromptTemplate::updateOrCreate(['key' => $key], [
                 'name' => $template['name'],
                 'description' => $template['description'],
             ]);
 
-            $prompt->versions()->create([
-                'version' => 1,
-                'content' => $template['content'],
-                'is_active' => true,
-            ]);
+            // Versions are immutable (I5), so a reseed must not rewrite an
+            // existing prompt; it only restores version 1 when the template
+            // has no versions left at all.
+            if ($prompt->versions()->doesntExist()) {
+                $prompt->versions()->create([
+                    'version' => 1,
+                    'content' => $template['content'],
+                    'is_active' => true,
+                ]);
+            }
         }
     }
 }

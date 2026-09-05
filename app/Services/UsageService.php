@@ -53,8 +53,8 @@ class UsageService
 
         $topUsers = AiUsageLog::whereBetween('ai_usage_logs.created_at', [$start, $end])
             ->join('users', 'users.id', '=', 'ai_usage_logs.user_id')
-            ->selectRaw('users.name, sum(ai_usage_logs.total_tokens) as tokens')
-            ->groupBy('users.name')
+            ->selectRaw('users.id, users.name, sum(ai_usage_logs.total_tokens) as tokens')
+            ->groupBy('users.id', 'users.name')
             ->orderByDesc('tokens')
             ->limit(5)
             ->get();

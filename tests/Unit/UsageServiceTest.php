@@ -57,3 +57,25 @@ it('aggregates monthly stats', function () {
     expect($stats['output_tokens'])->toBe(1000);
     expect($stats['cost'])->toBeGreaterThan(0);
 });
+
+it('keeps same-named users apart in the top users list', function () {
+    $service = app(UsageService::class);
+    $a = User::factory()->create(['name' => 'Dup Name', 'role' => 'writer']);
+    $b = User::factory()->create(['name' => 'Dup Name', 'role' => 'writer']);
+
+    foreach ([$a, $b] as $user) {
+        $request = ContentRequest::create([
+            'user_id' => $user->id,
+            'topic' => 'T',
+            'primary_keyword' => 'kw',
+        ]);
+        $service->record($user, $request, null, 'deepseek-v4-pro', 'generation', 100, 200, 10, 'success');
+    }
+
+    $top = $service->monthlyStats(now()->startOfMonth(), now()->endOfMonth())['top_users'];
+
+    // Grouping by name alone would merge both writers into a single row.
+    expect($top)->toHaveCount(2);
+    expect($top->pluck('name')->unique())->toHaveCount(1);
+    expect($top->pluck('id')->sort()->values()->all())->toBe([$a->id, $b->id]);
+});

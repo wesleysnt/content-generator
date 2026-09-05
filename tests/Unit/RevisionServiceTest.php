@@ -58,3 +58,22 @@ it('restore writes snapshot back and creates a pre-restore revision', function (
     expect($variation->revisions()->first()->revision_type)->toBe(RevisionType::Restore);
     expect($variation->revisions()->first()->snapshot['title'])->toBe('Changed Title');
 });
+
+it('refuses to restore a revision that belongs to another variation', function () {
+    $service = app(RevisionService::class);
+    $variation = makeVariation();
+    $other = makeVariation();
+
+    $variation->update(['title' => 'This variation']);
+    $service->snapshot($other, RevisionType::AiGeneration, null);
+    $foreignRevision = $other->revisions()->latest()->first();
+
+    expect(fn () => $service->restore($variation, $foreignRevision, null))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+
+    // Restoring a foreign snapshot must not snapshot, let alone overwrite,
+    // the variation that owns it.
+    expect($variation->fresh()->title)->toBe('This variation');
+    expect($variation->revisions()->count())->toBe(0);
+    expect($other->revisions()->count())->toBe(1);
+});
