@@ -61,6 +61,10 @@ class ContentVariation extends Model
 
     public function isRegenerable(): bool
     {
-        return ! $this->is_locked && $this->status !== VariationStatus::Discarded;
+        // Locked, discarded, and final variations are all terminal states:
+        // "Regenerate Unlocked" must never re-queue the variation the writer
+        // chose as final (smoke run finding).
+        return ! $this->is_locked
+            && ! in_array($this->status, [VariationStatus::Discarded, VariationStatus::Final], true);
     }
 }

@@ -40,6 +40,8 @@
                             <x-filament::badge color="success">LOCKED</x-filament::badge>
                         @elseif ($variation->status === \App\Enums\VariationStatus::Discarded)
                             <x-filament::badge color="danger">DISCARDED</x-filament::badge>
+                        @elseif ($variation->status === \App\Enums\VariationStatus::Final)
+                            <x-filament::badge color="primary">FINAL</x-filament::badge>
                         @elseif ($variation->status === \App\Enums\VariationStatus::Pending)
                             <x-filament::badge color="warning">GENERATING</x-filament::badge>
                         @endif
@@ -57,7 +59,7 @@
                 @endif
 
                 <div class="flex gap-2 flex-wrap">
-                    @if (class_exists(\App\Filament\Pages\ArticleEditor::class) && $variation->status === \App\Enums\VariationStatus::Generated)
+                    @if (class_exists(\App\Filament\Pages\ArticleEditor::class) && in_array($variation->status, [\App\Enums\VariationStatus::Generated, \App\Enums\VariationStatus::Final], true))
                         <x-filament::button
                             tag="a"
                             href="{{ App\Filament\Pages\ArticleEditor::getUrl(['record' => $variation->id]) }}"

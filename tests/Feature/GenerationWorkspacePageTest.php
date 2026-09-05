@@ -71,3 +71,32 @@ it('denies access to another writers request', function () {
         ->test(GenerationWorkspace::class, ['record' => $request->id])
         ->assertForbidden();
 });
+
+it('excludes finalized variations from regenerateUnlocked', function () {
+    [$writer, $request] = workspaceSetup();
+    $variations = $request->variations()->get();
+    app(GenerationService::class)->markFinal($variations[0]->id);
+    app(GenerationService::class)->markFinal($variations[1]->id);
+
+    Queue::fake();
+
+    Livewire::actingAs($writer)
+        ->test(GenerationWorkspace::class, ['record' => $request->id])
+        ->call('regenerateUnlocked');
+
+    // A variation the writer chose as final must not be re-queued by the
+    // batch "Regenerate Unlocked" action.
+    Queue::assertNothingPushed();
+});
+
+it('renders finalized variations as openable with a FINAL badge', function () {
+    [$writer, $request] = workspaceSetup();
+    [$v1, $v2] = $request->variations()->get();
+    app(GenerationService::class)->markFinal($v1->id);
+
+    Livewire::actingAs($writer)
+        ->test(GenerationWorkspace::class, ['record' => $request->id])
+        ->assertSee('FINAL')
+        ->assertSee('/admin/articles/' . $v1->id . '/edit')
+        ->assertSee('/admin/articles/' . $v2->id . '/edit');
+});

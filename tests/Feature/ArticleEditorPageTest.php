@@ -71,3 +71,15 @@ it('restores a revision and creates a new one', function () {
     expect($variation->fresh()->title)->toBe('Original');
     expect($variation->revisions()->count())->toBe(2);
 });
+
+it('hides AI regeneration actions once the variation is marked final', function () {
+    [$writer, $variation] = editorSetup();
+    app(\App\Services\GenerationService::class)->markFinal($variation->id);
+
+    Livewire::actingAs($writer)
+        ->test(ArticleEditor::class, ['record' => $variation->id])
+        ->assertSee('FINAL')
+        ->assertDontSee('Regenerate Title')
+        ->assertDontSee('Regenerate Section')
+        ->assertDontSee('Mark Final');
+});

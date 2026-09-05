@@ -19,7 +19,7 @@
             @else
                 <x-filament::badge color="success">FINAL</x-filament::badge>
             @endif
-            @if (!$isLocked)
+            @if (!$isLocked && !$isFinal)
                 <x-filament::button wire:click="regenerateTitle" color="warning" size="sm">Regenerate Title</x-filament::button>
             @endif
         </div>
@@ -69,7 +69,7 @@
                                     </x-filament::input.wrapper>
                                 </div>
                                 <div class="flex items-end justify-end">
-                                    @if (!$isLocked)
+                                    @if (!$isLocked && !$isFinal)
                                         <x-filament::button
                                             wire:click="regenerateSection({{ $section->id }})"
                                             size="sm"
