@@ -25,3 +25,33 @@ it('creating a version auto-numbers it as max + 1', function () {
 
     expect($next)->toBe(3);
 });
+
+it('creates and activates a prompt version from the relation manager', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $template = PromptTemplate::create(['key' => 'generation', 'name' => 'Generation']);
+    $template->versions()->create(['version' => 1, 'content' => 'v1 body', 'is_active' => true]);
+
+    $manager = \App\Filament\Resources\PromptTemplateResource\RelationManagers\PromptVersionsRelationManager::class;
+    $editPage = \App\Filament\Resources\PromptTemplateResource\Pages\EditPromptTemplate::class;
+
+    $component = Livewire::actingAs($admin)->test($manager, [
+        'ownerRecord' => $template,
+        'pageClass' => $editPage,
+    ]);
+
+    $component
+        ->callTableAction('create', data: ['content' => 'v2 body'])
+        ->assertHasNoTableActionErrors();
+
+    $v2 = $template->versions()->where('version', 2)->first();
+    expect($v2)->not->toBeNull();
+    expect($v2->is_active)->toBeFalse();
+
+    $component
+        ->callTableAction('activate', record: $v2)
+        ->assertHasNoTableActionErrors();
+
+    expect($template->versions()->where('is_active', true)->count())->toBe(1);
+    expect($template->versions()->where('version', 2)->first()->is_active)->toBeTrue();
+    expect($template->versions()->where('version', 1)->first()->is_active)->toBeFalse();
+});

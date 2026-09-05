@@ -87,6 +87,17 @@ class GenerationService
     public function generateVariation(int $variationId): void
     {
         $variation = ContentVariation::findOrFail($variationId);
+
+        // Batch generation is only valid for a variation that has not been
+        // generated yet. A duplicate/stale job instance (e.g. re-dispatched
+        // after a worker restart or horizon drain) must never overwrite a
+        // variation that is locked, discarded, final, or already generated —
+        // the smoke run observed three sequential full generations rewrite a
+        // locked variation because GenerateContentJob lacked this guard.
+        if ($variation->is_locked || $variation->status !== VariationStatus::Pending) {
+            return;
+        }
+
         $request = $variation->request;
 
         $template = PromptTemplate::where('key', 'generation')->firstOrFail();

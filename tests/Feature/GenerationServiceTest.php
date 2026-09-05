@@ -314,6 +314,49 @@ it('recomputes the request status after a regeneration attempt', function () {
     expect($variation->fresh()->request->fresh()->status)->toBe(RequestStatus::Completed);
 });
 
+it('is a no-op when a batch job re-runs for a variation whose content is already decided', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        $this->makeVariationResult(),
+        $this->makeVariationResult(),
+        $this->makeVariationResult(),
+        $this->makeVariationResult(['title' => 'Would-Overwrite Title']),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 3,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+    $variations = $request->variations()->get();
+
+    $service->generateVariation($variations[0]->id);
+    $service->generateVariation($variations[1]->id);
+    $service->generateVariation($variations[2]->id);
+    expect(AiUsageLog::count())->toBe(3);
+
+    // Variation 1 is locked, 2 generated, 3 discarded — none of them may be
+    // overwritten by a duplicate/stale batch job (e.g. re-dispatched after a
+    // worker restart), which is exactly what happened in the smoke run:
+    // locked v5 accumulated three sequential full generations.
+    $service->lock($variations[0]->id);
+    $service->discard($variations[2]->id);
+
+    $service->generateVariation($variations[0]->id);
+    $service->generateVariation($variations[1]->id);
+    $service->generateVariation($variations[2]->id);
+
+    expect($variations[0]->fresh()->title)->toBe('Cloud Accounting for Small Businesses');
+    expect($variations[0]->fresh()->is_locked)->toBeTrue();
+    expect($variations[1]->fresh()->title)->toBe('Cloud Accounting for Small Businesses');
+    expect($variations[2]->fresh()->status)->toBe(VariationStatus::Discarded);
+    expect(AiUsageLog::count())->toBe(3);
+    expect($request->fresh()->status)->toBe(RequestStatus::Completed);
+});
+
 it('passes locked variation titles as negative context during regeneration', function () {
     [$writer] = setupWriter();
 
