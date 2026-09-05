@@ -2,6 +2,14 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Pages\ArticleEditor;
+use App\Filament\Pages\CreateContentRequest;
+use App\Filament\Pages\GenerationWorkspace;
+use App\Filament\Pages\ListContentRequests;
+use App\Filament\Pages\Settings;
+use App\Filament\Resources\AiUsageLogResource;
+use App\Filament\Resources\PromptTemplateResource;
+use App\Filament\Resources\UserResource;
 use App\Filament\Widgets\RecentContentWidget;
 use App\Filament\Widgets\UsageStatsWidget;
 use Filament\Http\Middleware\Authenticate;
@@ -34,6 +42,18 @@ class AdminPanelProvider extends PanelProvider
             ->widgets([
                 UsageStatsWidget::class,
                 RecentContentWidget::class,
+            ])
+            ->pages([
+                ListContentRequests::class,
+                CreateContentRequest::class,
+                GenerationWorkspace::class,
+                ArticleEditor::class,
+                Settings::class,
+            ])
+            ->resources([
+                UserResource::class,
+                PromptTemplateResource::class,
+                AiUsageLogResource::class,
             ])
             ->navigationGroups([
                 'Content',
