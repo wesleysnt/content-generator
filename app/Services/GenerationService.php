@@ -427,12 +427,14 @@ class GenerationService
                     $result = $this->provider->regenerateVariation($repair);
                 } catch (ValidationFailedException) {
                     $this->recordFailure($request, $variation, $generationRequest->model, $operation, $start, 'Response failed validation after repair');
+                    $this->updateRequestStatus($request);
 
                     return;
                 }
             }
         } catch (AICallException|AIResponseException $e) {
             $this->recordFailure($request, $variation, $generationRequest->model, $operation, $start, $e->getMessage());
+            $this->updateRequestStatus($request);
 
             return;
         }
@@ -478,6 +480,11 @@ class GenerationService
                 $operation, $result->inputTokens, $result->outputTokens, $duration
             );
         });
+
+        // A regeneration can be the first successful write for a request
+        // (e.g. an interrupted batch, or retry after all attempts failed),
+        // so converge the request header instead of leaving stale state.
+        $this->updateRequestStatus($request);
     }
 
     private function negativeContext(ContentRequest $request, ContentVariation $current): array
@@ -492,7 +499,12 @@ class GenerationService
 
     private function maxTokens(int $wordCount): int
     {
-        return min(16384, max(4096, $wordCount * 2 + 3000));
+        // Reasoning-capable providers count chain-of-thought tokens against
+        // max_tokens. The smoke run observed a 1,500-word generation stop at
+        // finish_reason=length with a 6,000-token budget, so the article
+        // budget now includes explicit reasoning headroom. Capped at the
+        // largest value the provider is known to accept.
+        return min(32768, max(8192, (int) ceil($wordCount * 8) + 6000));
     }
 
     private function elapsedMs(int $start): int

@@ -80,6 +80,58 @@ it('generates a variation end to end with the fake provider', function () {
     expect(AiUsageLog::count())->toBe(1);
 });
 
+it('allocates a generation token budget large enough for reasoning-model overhead', function () {
+    [$writer] = setupWriter();
+
+    $captured = new \App\AI\Fake\FakeAIProvider([$this->makeVariationResult()]);
+    $probe = new class ($captured) implements AIProvider {
+        public function __construct(private AIProvider $inner) {}
+
+        public int $maxTokens = 0;
+
+        public function generateVariation(\App\AI\DTO\GenerationRequest $request): \App\AI\DTO\VariationResult
+        {
+            $this->maxTokens = $request->maxTokens;
+
+            return $this->inner->generateVariation($request);
+        }
+
+        public function regenerateVariation(\App\AI\DTO\GenerationRequest $request): \App\AI\DTO\VariationResult
+        {
+            return $this->inner->regenerateVariation($request);
+        }
+
+        public function regenerateSection(\App\AI\DTO\SectionRegenerationRequest $request): \App\AI\DTO\SectionResult
+        {
+            return $this->inner->regenerateSection($request);
+        }
+
+        public function regenerateTitle(\App\AI\DTO\TitleRegenerationRequest $request): \App\AI\DTO\TitleResult
+        {
+            return $this->inner->regenerateTitle($request);
+        }
+    };
+    $this->app->bind(AIProvider::class, fn () => $probe);
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting for SMBs',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 1500,
+    ]);
+    $service->dispatchBatch($request);
+
+    $service->generateVariation($request->variations()->first()->id);
+
+    // Regression guard: with a plain 6_000-token cap the live provider
+    // stopped at finish_reason=length before emitting the full 1,500-word
+    // JSON article (reasoning tokens count against max_tokens).
+    expect($probe->maxTokens)
+        ->toBeGreaterThanOrEqual(12_000)
+        ->toBeLessThanOrEqual(32_768);
+});
+
 it('repairs once on validation failure then succeeds', function () {
     [$writer] = setupWriter();
     $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
@@ -231,4 +283,97 @@ it('marks the variation failed when the repair attempt also fails validation', f
     expect($variation->error_message)->toContain('after repair');
     expect($variation->request->fresh()->status)->toBe(RequestStatus::Failed);
     expect(AiUsageLog::where('status', 'failed')->count())->toBe(1);
+});
+
+it('recomputes the request status after a regeneration attempt', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        new AICallException('Provider API error: timeout'), // initial generation fails
+        $this->makeVariationResult(),                        // regeneration succeeds
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $variation = $request->variations()->first();
+    $service->generateVariation($variation->id);
+    expect($variation->fresh()->request->fresh()->status)->toBe(RequestStatus::Failed);
+
+    $service->regenerateVariation($variation->id);
+
+    // Regression guard: regenerateVariation used to never call
+    // updateRequestStatus, leaving the request header stuck on "failed"
+    // (or "queued"/"processing") even after a later attempt succeeded.
+    expect($variation->fresh()->status)->toBe(VariationStatus::Generated);
+    expect($variation->fresh()->request->fresh()->status)->toBe(RequestStatus::Completed);
+});
+
+it('passes locked variation titles as negative context during regeneration', function () {
+    [$writer] = setupWriter();
+
+    $inner = new FakeAIProvider([
+        $this->makeVariationResult(['title' => 'First Angle Article']),
+        $this->makeVariationResult(['title' => 'Second Angle Article']),
+        $this->makeVariationResult(['title' => 'Second Angle Rewritten']),
+    ]);
+    $captured = [];
+    $probe = new class ($inner) implements AIProvider {
+        public function __construct(private AIProvider $inner) {}
+
+        /** @var array<int, array{negativeContext: array, variationNumber: int}> */
+        public array $seen = [];
+
+        public function generateVariation(\App\AI\DTO\GenerationRequest $request): \App\AI\DTO\VariationResult
+        {
+            return $this->inner->generateVariation($request);
+        }
+
+        public function regenerateVariation(\App\AI\DTO\GenerationRequest $request): \App\AI\DTO\VariationResult
+        {
+            $this->seen[] = $request->negativeContext;
+
+            return $this->inner->regenerateVariation($request);
+        }
+
+        public function regenerateSection(\App\AI\DTO\SectionRegenerationRequest $request): \App\AI\DTO\SectionResult
+        {
+            return $this->inner->regenerateSection($request);
+        }
+
+        public function regenerateTitle(\App\AI\DTO\TitleRegenerationRequest $request): \App\AI\DTO\TitleResult
+        {
+            return $this->inner->regenerateTitle($request);
+        }
+    };
+    $this->app->bind(AIProvider::class, fn () => $probe);
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 2,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $variations = $request->variations()->get();
+    $service->generateVariation($variations[0]->id);
+    $service->generateVariation($variations[1]->id);
+
+    // Variation 1 is locked after generation; regenerating variation 2 must
+    // see variation 1's title (and excerpt) as negative context.
+    $service->lock($variations[0]->id);
+    $service->regenerateVariation($variations[1]->id);
+
+    expect($probe->seen)->toHaveCount(1);
+    $context = implode(' ', $probe->seen[0]);
+    expect($context)->toContain('First Angle Article');
+    expect($context)->not->toContain('Second Angle');
+    expect($variations[1]->fresh()->title)->toBe('Second Angle Rewritten');
 });

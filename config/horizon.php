@@ -207,7 +207,10 @@ return [
             'maxJobs' => 0,
             'memory' => 128,
             'tries' => 1,
-            'timeout' => 60,
+            // AI generation calls may legitimately run for several minutes
+            // (config('ai.timeout') is 300s); a shorter worker timeout kills
+            // jobs mid-request and leaves variations stuck in "pending".
+            'timeout' => 300,
             'nice' => 0,
         ],
     ],
