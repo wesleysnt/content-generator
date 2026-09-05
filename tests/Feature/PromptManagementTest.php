@@ -55,3 +55,45 @@ it('creates and activates a prompt version from the relation manager', function 
     expect($template->versions()->where('version', 2)->first()->is_active)->toBeTrue();
     expect($template->versions()->where('version', 1)->first()->is_active)->toBeFalse();
 });
+
+it('offers no way to edit an existing prompt version', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $template = PromptTemplate::create(['key' => 'generation', 'name' => 'Generation']);
+    $template->versions()->create(['version' => 1, 'content' => 'v1 body', 'is_active' => true]);
+
+    $manager = \App\Filament\Resources\PromptTemplateResource\RelationManagers\PromptVersionsRelationManager::class;
+    $editPage = \App\Filament\Resources\PromptTemplateResource\Pages\EditPromptTemplate::class;
+
+    $component = Livewire::actingAs($admin)->test($manager, [
+        'ownerRecord' => $template,
+        'pageClass' => $editPage,
+    ]);
+
+    // Content and is_active are absent from any edit context: rewriting a
+    // published version would silently change the prompts of already
+    // generated content that points at this prompt_version_id.
+    $component->assertTableActionDoesNotExist('edit');
+    expect($template->versions()->first()->content)->toBe('v1 body');
+    expect($template->versions()->where('is_active', true)->count())->toBe(1);
+});
+
+it('only offers the activate action for inactive versions', function () {
+    $admin = User::factory()->create(['role' => 'admin']);
+    $template = PromptTemplate::create(['key' => 'generation', 'name' => 'Generation']);
+    $template->versions()->create(['version' => 1, 'content' => 'v1 body', 'is_active' => true]);
+
+    $manager = \App\Filament\Resources\PromptTemplateResource\RelationManagers\PromptVersionsRelationManager::class;
+    $editPage = \App\Filament\Resources\PromptTemplateResource\Pages\EditPromptTemplate::class;
+
+    $component = Livewire::actingAs($admin)->test($manager, [
+        'ownerRecord' => $template,
+        'pageClass' => $editPage,
+    ]);
+
+    $v1 = $template->versions()->where('version', 1)->first();
+
+    // The active version carries no Activate action: the single-active
+    // invariant is only ever broken transactionally by promoting an
+    // inactive version.
+    $component->assertTableActionHidden('activate', $v1);
+});
