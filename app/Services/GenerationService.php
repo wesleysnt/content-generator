@@ -18,6 +18,7 @@ use App\Enums\RevisionType;
 use App\Enums\VariationStatus;
 use App\Jobs\GenerateContentJob;
 use App\Jobs\RegenerateContentJob;
+use App\Models\AiUsageLog;
 use App\Models\ContentRequest;
 use App\Models\ContentVariation;
 use App\Models\PromptTemplate;
@@ -51,6 +52,8 @@ class GenerationService
             'additional_instructions' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
+        $this->assertMonthlyLimit($user, $validated['variation_count']);
+
         return ContentRequest::create([
             'user_id' => $user->id,
             'topic' => $validated['topic'],
@@ -67,6 +70,10 @@ class GenerationService
 
     public function dispatchBatch(ContentRequest $request): void
     {
+        // createRequest already reserved room for this batch; re-check so a
+        // direct dispatchBatch call cannot slip past the cap.
+        $this->assertMonthlyLimit($request->user);
+
         $angles = $this->anglePool->assign($request->variation_count, $request->id);
 
         foreach ($angles as $index => $angle) {
@@ -223,6 +230,9 @@ class GenerationService
     {
         $variation = ContentVariation::findOrFail($variationId);
         $this->authorizeVariationOwner($user, $variation);
+        if ($user !== null) {
+            $this->assertMonthlyLimit($user, 1);
+        }
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
         abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
@@ -254,6 +264,9 @@ class GenerationService
     {
         $variation = ContentVariation::with('sections')->findOrFail($variationId);
         $this->authorizeVariationOwner($user, $variation);
+        if ($user !== null) {
+            $this->assertMonthlyLimit($user, 1);
+        }
         $section = $variation->sections()->findOrFail($sectionId);
         $request = $variation->request;
 
@@ -307,6 +320,9 @@ class GenerationService
     {
         $variation = ContentVariation::findOrFail($variationId);
         $this->authorizeVariationOwner($user, $variation);
+        if ($user !== null) {
+            $this->assertMonthlyLimit($user, 1);
+        }
         $request = $variation->request;
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
@@ -389,12 +405,35 @@ class GenerationService
         if ($user !== null && ! $user->isAdmin() && $user->id !== $request->user_id) {
             abort(403, 'You do not own this content request.');
         }
+        if ($user !== null) {
+            $additional = $request->unlockedVariations()->get()
+                ->filter(fn ($v) => $v->isRegenerable())
+                ->count();
+            $this->assertMonthlyLimit($user, $additional);
+        }
 
         foreach ($request->unlockedVariations()->get() as $variation) {
             if ($variation->isRegenerable()) {
                 RegenerateContentJob::dispatch($variation->id, $user?->id ?? auth()->id());
             }
         }
+    }
+
+    public function monthlyGenerationCount(User $user): int
+    {
+        return AiUsageLog::where('user_id', $user->id)
+            ->whereBetween('created_at', [now()->startOfMonth(), now()->endOfMonth()])
+            ->whereIn('operation', ['generation', 'regeneration', 'section_regeneration', 'title_regeneration'])
+            ->count();
+    }
+
+    public function assertMonthlyLimit(User $user, int $additional = 0): void
+    {
+        abort_if(
+            $this->monthlyGenerationCount($user) + $additional > $this->settingsService->limitMonthlyGenerations(),
+            403,
+            'Monthly generation limit reached.'
+        );
     }
 
     private function authorizeVariationOwner(?User $user, ContentVariation $variation): void

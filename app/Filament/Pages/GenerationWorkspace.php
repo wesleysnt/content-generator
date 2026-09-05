@@ -69,6 +69,8 @@ class GenerationWorkspace extends Page
     {
         $variation = $this->authorizeVariation($variationId, 'regenerate');
 
+        app(GenerationService::class)->assertMonthlyLimit(auth()->user(), 1);
+
         \App\Jobs\RegenerateContentJob::dispatch($variationId, auth()->id());
 
         Notification::make()->title('Regeneration queued.')->success()->send();
@@ -78,6 +80,8 @@ class GenerationWorkspace extends Page
     public function retryVariation(int $variationId): void
     {
         $variation = $this->authorizeVariation($variationId, 'regenerate');
+
+        app(GenerationService::class)->assertMonthlyLimit(auth()->user(), 1);
 
         // A failed initial generation (variation still pending) restarts the
         // batch generation job; a failed regeneration of already-generated
