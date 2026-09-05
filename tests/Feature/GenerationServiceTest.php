@@ -234,7 +234,7 @@ it('sanitizes section HTML on persist', function () {
     expect($body)->not->toContain('onerror');
 });
 
-it('keeps a finalized request completed when section regeneration fails', function () {
+it('keeps a completed request completed when a section regeneration fails', function () {
     [$writer] = setupWriter();
     $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
         $this->makeVariationResult(),
@@ -252,7 +252,6 @@ it('keeps a finalized request completed when section regeneration fails', functi
 
     $variation = $request->variations()->first();
     $service->generateVariation($variation->id);
-    $service->markFinal($variation->id);
 
     $service->regenerateSection($variation->id, $variation->sections()->first()->id);
 
@@ -419,4 +418,76 @@ it('passes locked variation titles as negative context during regeneration', fun
     expect($context)->toContain('First Angle Article');
     expect($context)->not->toContain('Second Angle');
     expect($variations[1]->fresh()->title)->toBe('Second Angle Rewritten');
+});
+
+it('refuses every regeneration entry point once a variation is final', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        $this->makeVariationResult(),
+        $this->makeVariationResult(['title' => 'Would-Overwrite Title']),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 1,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $variation = $request->variations()->first();
+    $service->generateVariation($variation->id);
+    $service->markFinal($variation->id);
+    $sectionId = $variation->sections()->first()->id;
+
+    // A Final variation is terminal: no AI write-back from a queued or
+    // manual regeneration job may touch it (the queued RegenerateContentJob,
+    // RegenerateSectionJob and RegenerateTitleJob all land here).
+    expect(fn () => $service->regenerateVariation($variation->id))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->regenerateSection($variation->id, $sectionId))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+    expect(fn () => $service->regenerateTitle($variation->id))
+        ->toThrow(Symfony\Component\HttpKernel\Exception\HttpException::class);
+
+    // No side effects from the aborted attempts: content, revisions and
+    // usage logs are untouched.
+    $variation->refresh();
+    expect($variation->title)->toBe('Cloud Accounting for Small Businesses');
+    expect($variation->status)->toBe(VariationStatus::Final);
+    expect($variation->revisions()->count())->toBe(1);
+    expect(AiUsageLog::count())->toBe(1);
+});
+
+it('converges the request status when a duplicate batch job no-ops', function () {
+    [$writer] = setupWriter();
+    $this->app->bind(AIProvider::class, fn () => new FakeAIProvider([
+        $this->makeVariationResult(),
+        $this->makeVariationResult(),
+    ]));
+
+    $service = app(GenerationService::class);
+    $request = $service->createRequest($writer, [
+        'topic' => 'Cloud accounting',
+        'primary_keyword' => 'cloud accounting',
+        'variation_count' => 2,
+        'target_word_count' => 100,
+    ]);
+    $service->dispatchBatch($request);
+
+    $variations = $request->variations()->get();
+    $service->generateVariation($variations[0]->id);
+    $service->generateVariation($variations[1]->id);
+    expect($request->fresh()->status)->toBe(RequestStatus::Completed);
+
+    // Simulate a worker killed between the success transaction commit and
+    // updateRequestStatus: the header is stuck on "processing". A duplicate
+    // GenerateContentJob then no-ops (variation already generated) and must
+    // still converge the request header back to Completed.
+    $request->update(['status' => RequestStatus::Processing]);
+
+    $service->generateVariation($variations[0]->id);
+
+    expect($request->fresh()->status)->toBe(RequestStatus::Completed);
 });

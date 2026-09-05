@@ -87,6 +87,7 @@ class GenerationService
     public function generateVariation(int $variationId): void
     {
         $variation = ContentVariation::findOrFail($variationId);
+        $request = $variation->request;
 
         // Batch generation is only valid for a variation that has not been
         // generated yet. A duplicate/stale job instance (e.g. re-dispatched
@@ -95,10 +96,19 @@ class GenerationService
         // the smoke run observed three sequential full generations rewrite a
         // locked variation because GenerateContentJob lacked this guard.
         if ($variation->is_locked || $variation->status !== VariationStatus::Pending) {
+            // Converge a stuck header: the job instance that originally
+            // generated this variation may have died between its success
+            // transaction and updateRequestStatus, leaving the request on
+            // "queued"/"processing" — the no-op retry must finish that
+            // convergence. Never downgrade a request that is already
+            // completed (its variations may all be Final/Discarded by now,
+            // which updateRequestStatus would misread as "failed").
+            if ($request->status !== RequestStatus::Completed) {
+                $this->updateRequestStatus($request);
+            }
+
             return;
         }
-
-        $request = $variation->request;
 
         $template = PromptTemplate::where('key', 'generation')->firstOrFail();
         $promptVersion = $template->activeVersion()->firstOrFail();
@@ -214,6 +224,7 @@ class GenerationService
         $variation = ContentVariation::findOrFail($variationId);
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
+        abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
 
         $this->revisionService->snapshot($variation, RevisionType::AiRegeneration, auth()->id());
 
@@ -245,6 +256,7 @@ class GenerationService
         $request = $variation->request;
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
+        abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
 
         $this->revisionService->snapshot($variation, RevisionType::SectionRegeneration, auth()->id());
 
@@ -295,6 +307,7 @@ class GenerationService
         $request = $variation->request;
 
         abort_if($variation->is_locked, 403, 'Locked variations cannot be regenerated.');
+        abort_if($variation->status === VariationStatus::Final, 403, 'Final variations cannot be regenerated.');
 
         $this->revisionService->snapshot($variation, RevisionType::TitleRegeneration, auth()->id());
 
@@ -380,11 +393,16 @@ class GenerationService
             ->count();
 
         if ($pending === 0) {
-            $generated = $request->variations()->where('status', VariationStatus::Generated)->count();
+            // A Final variation implies a prior successful generation, so it
+            // counts as a success anchor: convergence must never downgrade a
+            // request whose variations are all Final/Discarded to "failed".
+            $succeeded = $request->variations()
+                ->whereIn('status', [VariationStatus::Generated, VariationStatus::Final])
+                ->count();
 
             $request->update([
-                'status' => $generated > 0 ? RequestStatus::Completed : RequestStatus::Failed,
-                'error_message' => $generated > 0
+                'status' => $succeeded > 0 ? RequestStatus::Completed : RequestStatus::Failed,
+                'error_message' => $succeeded > 0
                     ? null
                     : 'All variations failed. Check each variation for details.',
             ]);
