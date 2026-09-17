@@ -16,7 +16,7 @@
         <x-filament::section class="mb-4" wire:poll.5s="refreshRecord">
             <div class="text-sm font-medium">
                 Generating {{ $record->variations->where('status', \App\Enums\VariationStatus::Pending)->count() }}
-                variation(s) remaining…
+                variation(s) remaining
             </div>
         </x-filament::section>
     @endif
